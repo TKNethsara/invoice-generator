@@ -1,0 +1,1 @@
+Place optional local assets here. Business logos are stored in Supabase Storage.
