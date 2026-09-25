@@ -22,14 +22,14 @@ A vanilla HTML/CSS/JavaScript invoice manager powered by Supabase Auth, PostgreS
 
 ## 2. Frontend configuration
 
-Edit `js/supabase.js`:
+`js/config.js` is generated at deploy time. For GitHub Pages, add these GitHub repository secrets:
 
-```js
-const SUPABASE_URL = "YOUR_SUPABASE_URL";
-const SUPABASE_PUBLISHABLE_KEY = "YOUR_SUPABASE_PUBLISHABLE_OR_ANON_KEY";
-```
+- `SUPABASE_URL`
+- `SUPABASE_PUBLISHABLE_KEY` (publishable/anon key only)
 
-Only the publishable/anon key belongs in browser code. Never put a `service_role` key here.
+The included GitHub Actions workflow generates `js/config.js` during deployment. A browser-visible publishable/anon key is not a secret and must be protected by RLS; the Supabase `service_role` key must never be exposed to the browser.
+
+For local testing, copy `js/config.example.js` to `js/config.js` and fill in the URL and publishable/anon key.
 
 ## 3. Run
 

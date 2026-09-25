@@ -36,7 +36,7 @@ create table if not exists public.user_roles (
 
 create table if not exists public.customers (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   name text not null,
   company_name text,
   email text,
@@ -48,7 +48,7 @@ create table if not exists public.customers (
 
 create table if not exists public.products (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   name text not null,
   description text,
   price numeric(14,2) not null default 0 check (price >= 0),
@@ -60,7 +60,7 @@ create table if not exists public.products (
 
 create table if not exists public.invoices (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   customer_id uuid not null references public.customers(id) on delete restrict,
   invoice_number text not null,
   invoice_date date not null default current_date,
@@ -114,6 +114,11 @@ create table if not exists public.admin_audit_logs (
   description text,
   created_at timestamptz not null default now()
 );
+
+-- Keep ownership defaults correct even when this schema is applied to an existing project.
+alter table public.customers alter column user_id set default auth.uid();
+alter table public.products alter column user_id set default auth.uid();
+alter table public.invoices alter column user_id set default auth.uid();
 
 create index if not exists customers_user_id_idx on public.customers(user_id);
 create index if not exists products_user_id_idx on public.products(user_id);
@@ -200,6 +205,32 @@ drop policy if exists "roles self read" on public.user_roles;
 create policy "roles self read" on public.user_roles
 for select to authenticated
 using (user_id = auth.uid() or (select public.is_admin()));
+
+-- Prevent normal users from changing security-sensitive profile fields.
+create or replace function public.protect_profile_security_fields()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() <> old.id then
+    raise exception 'Profile ownership violation';
+  end if;
+  if not public.is_admin() then
+    new.id := old.id;
+    new.account_status := old.account_status;
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public.protect_profile_security_fields() from public;
+grant execute on function public.protect_profile_security_fields() to authenticated;
+drop trigger if exists profiles_security_guard on public.profiles;
+create trigger profiles_security_guard
+before update on public.profiles
+for each row execute function public.protect_profile_security_fields();
 
 -- Profiles
 alter table public.profiles enable row level security;
@@ -297,6 +328,54 @@ drop policy if exists "settings own delete" on public.settings;
 create policy "settings own delete" on public.settings for delete to authenticated
 using (user_id = auth.uid() or (select public.is_admin()));
 
+-- Enforce cross-table ownership for invoice/customer/product relationships.
+create or replace function public.enforce_invoice_relationship_ownership()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  invoice_owner uuid;
+  customer_owner uuid;
+  product_owner uuid;
+begin
+  if tg_table_name = 'invoices' then
+    select user_id into customer_owner from public.customers where id = new.customer_id;
+    if customer_owner is null or customer_owner <> new.user_id then
+      raise exception 'Customer ownership violation';
+    end if;
+    return new;
+  end if;
+
+  select user_id into invoice_owner from public.invoices where id = new.invoice_id;
+  if invoice_owner is null then raise exception 'Invoice not found'; end if;
+
+  if new.product_id is not null then
+    select user_id into product_owner from public.products where id = new.product_id;
+    if product_owner is null or product_owner <> invoice_owner then
+      raise exception 'Product ownership violation';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+-- Invoice ownership is checked when creating/updating invoices.
+drop trigger if exists invoices_relationship_guard on public.invoices;
+create trigger invoices_relationship_guard
+before insert or update on public.invoices
+for each row execute function public.enforce_invoice_relationship_ownership();
+
+-- Item product ownership is checked against the parent invoice.
+drop trigger if exists invoice_items_relationship_guard on public.invoice_items;
+create trigger invoice_items_relationship_guard
+before insert or update on public.invoice_items
+for each row execute function public.enforce_invoice_relationship_ownership();
+
+revoke all on function public.enforce_invoice_relationship_ownership() from public;
+grant execute on function public.enforce_invoice_relationship_ownership() to authenticated;
+
 -- Audit logs: only admins can read. Inserts happen through SECURITY DEFINER admin RPCs.
 alter table public.admin_audit_logs enable row level security;
 drop policy if exists "audit admin select" on public.admin_audit_logs;
@@ -347,7 +426,10 @@ group by p.id;
 
 -- Least-privilege Data API grants.
 grant select, insert, update, delete on public.profiles, public.customers, public.products,
-  public.invoices, public.invoice_items, public.settings, public.user_roles, public.admin_audit_logs to authenticated;
+  public.invoices, public.invoice_items, public.settings to authenticated;
+revoke all on public.user_roles from authenticated;
+grant select on public.user_roles to authenticated;
+revoke all on public.admin_audit_logs from authenticated;
 grant select on public.admin_user_overview to authenticated;
 
 -- Storage bucket and policies.

@@ -1,8 +1,8 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "./config.js";
 
-const SUPABASE_URL = "https://hamgchpxukwcyitdjjza.supabase.co";
-const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_a7y2BX8_ExUJ2NYrZiNPkw_jdfNJJTh";
-
+// GitHub Pages cannot keep a browser key secret. This must be the publishable/anon key only.
+// Never put SUPABASE_SERVICE_ROLE_KEY in this file or any frontend asset.
 export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
 });
@@ -13,9 +13,17 @@ export async function currentUser() {
   return data.user;
 }
 
+export function appUrl(path) {
+  const base = new URL("../", import.meta.url);
+  return new URL(path.replace(/^\//, ""), base).href;
+}
+
 export async function requireAuth() {
   const user = await currentUser();
-  if (!user) { location.href = "login.html"; throw new Error("Not authenticated"); }
+  if (!user) {
+    location.replace(appUrl("login.html"));
+    throw new Error("Not authenticated");
+  }
   return user;
 }
 
@@ -73,18 +81,29 @@ export function navShell(title, active, profile, isAdmin=false) {
 
 export function closeShell(){ return `</main></div>`; }
 
+export function debounce(fn, wait=300) {
+  let timer;
+  return (...args) => { clearTimeout(timer); timer=setTimeout(() => fn(...args), wait); };
+}
+
 export function wireShell() {
   document.getElementById("logoutBtn")?.addEventListener("click", async()=>{await supabase.auth.signOut();location.href="login.html";});
   document.getElementById("menuBtn")?.addEventListener("click",()=>document.getElementById("sidebar")?.classList.toggle("open"));
 }
 
+let bootPromise = null;
 export async function boot(active, title) {
-  const user=await requireAuth(); await ensureActive(user.id);
-  const [profile, role]=await Promise.all([getProfile(user.id),getRole(user.id)]);
+  if (bootPromise) return bootPromise;
+  bootPromise = (async () => {
+    const user=await requireAuth();
+    await ensureActive(user.id);
+    const [profile, role]=await Promise.all([getProfile(user.id),getRole(user.id)]);
   document.documentElement.classList.toggle("dark", localStorage.getItem("theme")==="dark");
   document.getElementById("app").innerHTML=navShell(title,active,profile,role==="admin")+`</main></div>`;
-  wireShell();
-  return {user,profile,role};
+    wireShell();
+    return {user,profile,role};
+  })().catch(error => { bootPromise=null; throw error; });
+  return bootPromise;
 }
 
 export function setTheme(theme){ localStorage.setItem("theme",theme); document.documentElement.classList.toggle("dark",theme==="dark"); }
